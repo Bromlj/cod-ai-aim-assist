@@ -1,0 +1,20 @@
+# Core for high-performance COD AI Aim Assist (best version)
+mss>=9.0.1
+numpy>=1.24
+ultralytics>=8.3.0
+opencv-python>=4.9.0   # For capture card (VideoCapture) + frame processing
+pygame>=2.5.0          # Controller input polling + visual overlay window
+
+# === Virtual Controller (highly recommended for controller mode) ===
+# vgamepad provides Xbox360 / DualShock4 emulation via ViGEmBus
+# pip install will prompt to install ViGEmBus driver (run as admin)
+vgamepad>=0.1.0
+
+# Optional but recommended for robust window finding (Chiaki, Xbox app)
+pygetwindow>=0.0.5
+# pywin32  (sometimes needed for advanced window ops)
+
+# For TensorRT (maximum FPS):
+# 1. Proper NVIDIA CUDA + drivers
+# 2. pip install tensorrt (correct version)
+# Then export model to .engine as described in README
