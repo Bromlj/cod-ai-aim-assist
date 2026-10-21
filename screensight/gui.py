@@ -28,6 +28,10 @@ class Overlay:
         self.canvas = tk.Canvas(self.top, bg=TRANSPARENT, highlightthickness=0, bd=0)
         self.canvas.pack(fill='both', expand=True)
         self._styled = False
+        # Install click-through/no-activate styles before the first show.
+        self.top.update_idletasks()
+        make_overlay_clickthrough(self.top.winfo_id())
+        self._styled = True
 
     def draw(self, snap: FrameState, enabled: bool) -> None:
         if not enabled or snap.state not in ('PREVIEW', 'ACTIVE') or not snap.region[2]:
@@ -74,6 +78,18 @@ class MainWindow:
         self.root.protocol('WM_DELETE_WINDOW', self.close)
         self.overlay = Overlay(self.root)
         self._last_state = ''
+        self.scrollbar = tk.Scrollbar(self.root, orient='vertical', bg='#344153',
+                                     activebackground=ACCENT, troughcolor=BG)
+        self.scrollbar.pack(side='right', fill='y')
+        self.scroller = tk.Canvas(self.root, bg=BG, highlightthickness=0, bd=0,
+                                  yscrollcommand=self.scrollbar.set)
+        self.scroller.pack(side='left', fill='both', expand=True)
+        self.scrollbar.configure(command=self.scroller.yview)
+        self.content = tk.Frame(self.scroller, bg=BG)
+        self.content_window = self.scroller.create_window((0, 0), window=self.content, anchor='nw')
+        self.content.bind('<Configure>', lambda _ev: self.scroller.configure(scrollregion=self.scroller.bbox('all')))
+        self.scroller.bind('<Configure>', lambda ev: self.scroller.itemconfigure(self.content_window, width=ev.width))
+        self.scroller.bind_all('<MouseWheel>', lambda ev: self.scroller.yview_scroll(-int(ev.delta / 120), 'units'))
         self.enabled = tk.BooleanVar(value=False)
         self.preview = tk.BooleanVar(value=True)
         self.show_overlay = tk.BooleanVar(value=True)
@@ -95,7 +111,7 @@ class MainWindow:
                         font=('Segoe UI', font_size), **kw)
 
     def _card(self, title: str) -> tk.Frame:
-        outer = tk.Frame(self.root, bg=SURFACE, padx=16, pady=12)
+        outer = tk.Frame(self.content, bg=SURFACE, padx=16, pady=12)
         outer.pack(fill='x', padx=18, pady=(0, 12))
         self._label(outer, title, 11, TEXT, anchor='w').pack(fill='x', pady=(0, 7))
         return outer
@@ -119,7 +135,7 @@ class MainWindow:
         change(str(var.get()))
 
     def _build(self) -> None:
-        head = tk.Frame(self.root, bg=BG, padx=20, pady=16)
+        head = tk.Frame(self.content, bg=BG, padx=20, pady=16)
         head.pack(fill='x')
         self._label(head, 'SCREEN SIGHT', 23, TEXT, anchor='w').pack(fill='x')
         self._label(head, 'Offline vision  ·  ONNX  ·  No account or telemetry', 10,
@@ -174,7 +190,7 @@ class MainWindow:
         self._slider(params, 'Detection area (pixels)', self.roi, 320, 720, 40)
         self._slider(params, 'Maximum mouse movement per frame', self.max_step, 4, 32, 2)
 
-        foot = self._label(self.root,
+        foot = self._label(self.content,
                            'COCO person detector: cannot tell opponents from teammates.\n'
                            'Not tested or guaranteed in Black Ops 7; game rules still apply.',
                            9, MUTED, anchor='w', justify='left')
