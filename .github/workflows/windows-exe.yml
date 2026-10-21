@@ -37,7 +37,7 @@ jobs:
       - name: Create Windows single-file executable
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --console --name ScreenSight --collect-all onnxruntime --collect-binaries cv2 --add-data 'models/person-yolo11n.onnx;models' app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name ScreenSight --collect-all onnxruntime --collect-binaries cv2 --add-data 'models/person-yolo11n.onnx;models' app.py
       - name: Test packaged EXE without a game
         shell: pwsh
         run: |
