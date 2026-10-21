@@ -1,0 +1,53 @@
+name: Build ScreenSight Windows EXE
+
+on:
+  push:
+    branches: [main, feat/screensight]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - name: Checkout audited source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-win.txt
+      - name: Download pinned COCO person detector
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path models | Out-Null
+          $url = 'https://huggingface.co/webnn/yolo11n/resolve/main/onnx/yolo11n.onnx?download=true'
+          Invoke-WebRequest -Uri $url -OutFile models/person-yolo11n.onnx -MaximumRedirection 10
+          python tools/verify_model.py
+      - name: Python tests
+        run: python -m pytest -q
+      - name: Offline model smoke test
+        run: python app.py --self-test
+      - name: Create Windows single-file executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name ScreenSight --collect-all onnxruntime --collect-binaries cv2 --add-data 'models/person-yolo11n.onnx;models' app.py
+      - name: Test packaged EXE without a game
+        shell: pwsh
+        run: |
+          & .\dist\ScreenSight.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged self-test failed' }
+          Get-FileHash .\dist\ScreenSight.exe -Algorithm SHA256 | Format-List
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenSight-Windows-x64
+          path: dist/ScreenSight.exe
+          if-no-files-found: error
+          retention-days: 14

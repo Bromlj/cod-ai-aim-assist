@@ -1,153 +1,53 @@
-# COD AI Aim Assist (Real-time YOLO + TensorRT)
+# ScreenSight — local vision lab (experimental)
 
-High-performance, low-latency AI aim assist for Call of Duty.
+**A fresh source-code implementation** drawing on architectural ideas found in `Devloop7/cod-ai-aim-assist` and `SunOner/sunone_aimbot_2`. No third-party aimbot Python source or compiled device DLLs have been copied into this codebase.
 
-**Core features**
-- Captures tiny ROI around crosshair (screen center)
-- TensorRT YOLO (or CUDA .pt) inference
-- Smooth, human-like head tracking
-- **Only active while holding Right Mouse Button** (RMB / ADS)
-- Designed for 144–300+ FPS
+ScreenSight is a small Windows 10/11 (x64) application for experimenting with computer vision on live screen content. A YOLO11 ONNX model detects **people**, a bounded tracker estimates a target, and an optional Windows SendInput module can make mouse movements **only while right-click is held AND a permitted game window is foreground**. It does not read game memory, install drivers, hook a process, access a network at runtime, use keyloggers, save screenshots, collect credentials, or click/shoot for you.
 
-## Project files
-- `main.py` – Main loop
-- `config.py` – All tunables (ROI size, smoothing, model path, etc.)
-- `capture.py` – Fast mss ROI capture
-- `inference.py` – YOLO wrapper + target selection + head estimation
-- `aiming.py` – Smoothing & humanization logic
-- `input_emulation.py` – RMB detection + SendInput mouse moves
-- `activation.py` – Activation state machine
-- `models/` – Put your `best.engine` or `best.pt` here
+## Current capabilities
 
-## 1. Installation
+- Live, center-window capture with `mss`; no game process access.
+- Local ONNX YOLO11 people detection (GPU via DirectML when available, CPU fallback).
+- Position tracking with inertia and short lookahead; centre-biased subject selection.
+- Click-through bounding-box overlay, FPS and inference-time stats.
+- Explicit **Enable mouse movement** control, *off by default*. Also requires ADS/right-click plus foreground window title match. **F8 immediately disables mouse control**.
+- Tunable detection confidence, area of interest, aim height, smoothing/strength, and maximum movement per frame.
+- Unbundled custom `.onnx` file option; model change requires stop and restart.
 
-```powershell
-cd "C:\Users\maor\Desktop\ai tool"
+### IMPORTANT LIMITATIONS
 
-# Create venv (recommended)
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+The included model is a generic COCO `person` detector, **not trained to distinguish Black Ops 7 enemies from teammates**. It may miss stylised targets, track friendly players, move inconsistently or not work in-game at all. We have not tested the executable in Black Ops 7; Windows synthetic input may be blocked. It is not designed to evade anti-cheat controls. Use of aim assistance may breach game rules and lead to account restrictions. Source review and tests cannot guarantee a program is malware-free.
 
-# Install deps
-pip install -r requirements.txt
-```
+## Download and run
 
-**For maximum performance (TensorRT):**
-1. Have a recent NVIDIA GPU + latest Game Ready driver.
-2. Install CUDA Toolkit + cuDNN (matching versions).
-3. `pip install tensorrt` (or download the correct wheel from NVIDIA).
-4. See export instructions below.
+1. On the repository's **Actions → Build ScreenSight Windows EXE**, open a successful Windows build.
+2. Download the **ScreenSight-Windows-x64** artifact and unzip it.
+3. Launch `ScreenSight.exe` as a regular user. No administrator rights are required or recommended.
+4. Click **START VISION**. The default mode is display-only; it will look at a foreground window containing “Call of Duty” or “Black Ops 7”.
+5. If permitted for your controlled experiment, **Enable mouse movement**; it operates **only while holding right-click** with a matching foreground window.
+6. Press **F8** for emergency mouse-disable, or click **STOP**.
 
-## 2. Get / Prepare a Model
+No user account, installer, antivirus exclusion or special mouse driver is needed. Windows SmartScreen can warn on an unsigned hobbyist binary; validate the downloaded SHA-256 hash against the GitHub Actions build log and scan it before launch.
 
-### Recommended public sources (2025-2026)
-- **Roboflow Universe** – Search "warzone", "black ops 6", "mw3", "call of duty"
-  - Larger datasets perform better: look for 5k–14k+ images (e.g. "warzone-detection" projects).
-  - Example: https://universe.roboflow.com (filter by recent COD titles)
-- Small public BO6 models exist (jerome, BO6 AI Training) but are limited (~164 images).
-- The project already contains a small trained model:
-  - `yolo-training/model/cod_yolo11n.pt` (trained on MW2 body data, 1 class).
+## Reproducible build
 
-**Best practice:** Collect your own recent screenshots from the current season/patch and fine-tune. Game visuals change often.
+The Windows Actions workflow installs versions from `requirements-win.txt`, downloads one pinned ONNX model and confirms the SHA-256 hash, runs Python unit tests and an ONNX smoke test, bundles Python and dependencies with PyInstaller, then performs an EXE self-test and publishes the build as a GitHub artifact. On a Windows workstation with Python 3.11, run the same commands in `.github/workflows/windows-exe.yml`.
 
-### Convert to TensorRT .engine (strongly recommended)
-```python
-from ultralytics import YOLO
+The *app never downloads the model*. The CI build fetches it once, verifies it and embeds it into `ScreenSight.exe`. Alternatively, you can bring your own ONNX model via the Browse control. Never load unknown `.pt`/`.pkl` checkpoints just to use ScreenSight.
 
-model = YOLO("yolo-training/model/cod_yolo11n.pt")   # or your downloaded .pt
-model.export(
-    format="engine",
-    imgsz=320,        # or 288 / 256 for more speed
-    half=True,
-    device=0,
-    # workspace=4,    # lower if you get OOM during export
-)
-# Produces cod_yolo11n.engine (or best.engine)
-```
+## Security overview
 
-Move the `.engine` into `models/best.engine`.
+| Area | Design |
+| --- | --- |
+| Network | Application code contains no HTTP, socket, webhook or telemetry clients. Build dependencies/model download occur in CI only. |
+| Input | User-mode `SendInput` movement; never click or type. No WinRing0, drivers, KMBOX, Razer or GHub DLLs. |
+| Permissions | Ordinary Windows user, no UAC prompt, no registry writes or scheduled tasks. |
+| Data | In-memory detection results only, no automatic screenshot saving or upload. |
+| Model | ONNX (no PyTorch pickle loading), hash-checked against the known bundled model. |
+| Safety | Starts read-only, foreground-title guard, RMB requirement, F8 emergency disable, movement step cap. |
 
-You can also start with a `.pt` file for testing (slower but easier).
+### Dependency and license notices
 
-Update `config.py` → `MODEL_PATH` or place it in one of the fallback locations.
+Source application code is MIT-licensed (see `LICENSE`). The bundled YOLO11n model is from [webnn/yolo11n](https://huggingface.co/webnn/yolo11n), itself based on Ultralytics YOLO11 pretrained COCO models; the model is distributed under **AGPL-3.0** according to its model card. Respect those terms when distributing. The model SHA-256 is `7d8fd1717d9d5bbab6986cd134afb620649c7a394303d55b1e09fc00804cc5c1`.
 
-## 3. Configuration (config.py)
-
-Key parameters to tune:
-- `ROI_WIDTH / ROI_HEIGHT`: 280–400 is typical sweet spot.
-- `IMGSZ`: Should be close to ROI size (320 recommended).
-- `CONF`: 0.30–0.55. Higher = fewer false triggers.
-- `HEAD_OFFSET`: 0.12–0.25. Lower = higher on the body (head).
-- `SMOOTH_FACTOR` / `SMOOTH_FACTOR_Y`: 0.30–0.55 range feels human.
-- `MAX_MOVE_X/Y`: 20–35 prevents snaps.
-
-## 4. Running
-
-```powershell
-# As Administrator (very important for input reliability)
-# Right-click PowerShell → Run as administrator, then:
-cd "C:\Users\maor\Desktop\ai tool"
-.\.venv\Scripts\Activate.ps1
-python main.py
-```
-
-**In game:**
-- Use **Borderless Windowed** or **Fullscreen Windowed**.
-- Disable mouse acceleration / raw input if the assist feels off.
-- Hold **Right Mouse Button** (aim/ADS) → assist activates.
-- Crosshair must be roughly in center of monitor.
-
-## 5. Testing Steps (without getting banned)
-
-1. **Dry run (no game):** Run `python main.py` and hold RMB on desktop. Watch console for FPS.
-   - You should see high average FPS (200+ possible on good GPU).
-2. **Capture test:** Temporarily set `DEBUG=True` or add prints. Or run `python capture.py`.
-3. **Inference test:** `python inference.py` (will run on dummy data).
-4. **Input test:** `python input_emulation.py` – should move mouse slightly.
-5. **In game (safe):** 
-   - Private match / vs bots / firing range.
-   - Lower your confidence / smoothing first.
-   - Watch if it tracks heads when you hold RMB.
-6. Measure real FPS in console output.
-
-## 6. Troubleshooting
-
-| Problem                        | Likely Cause / Fix |
-|--------------------------------|--------------------|
-| Low FPS (<80)                  | Using .pt instead of .engine. ROI too big. No CUDA. Update to TensorRT. |
-| No detections                  | Wrong class index (see `ENEMY_CLASS`). Low CONF. Model trained on old game version. Increase ROI or lower CONF temporarily. |
-| Jerky / snapping movement      | SMOOTH_FACTOR too high, MAX_MOVE too high, or no smoothing. Reduce both. |
-| Assist works on desktop but not in game | Game is fullscreen exclusive (use borderless). Not running as admin. Mouse acceleration on. |
-| Model load error               | TensorRT version mismatch. Re-export on same machine. Use .pt first. |
-| Capture is black / wrong area  | Multi-monitor setup (change `sct.monitors[1]`). Overlay / HDR issues. |
-| High CPU usage when inactive   | Normal for tight loop. Add sleep when !active (already done). |
-| Windows Defender / false positive | Common with input emulation tools. Add folder exclusion. |
-| Game detects / bans            | This is against ToS on all modern COD titles. Use at own risk, preferably only on private servers or for research. |
-
-## 7. Performance Tips for 144+ FPS
-
-- Use **TensorRT .engine + half=True**
-- ROI 320×320 or smaller + imgsz=320/288
-- Nano model (n or 11n)
-- No prints / debug inside the main loop
-- Game at 1080p or 1440p (4K is heavier on capture)
-- Close overlays (Discord, NVIDIA, etc.)
-
-## 8. Disclaimer
-
-This is a technical demonstration / research project.
-Using AI aim assist in online multiplayer is against the terms of service of Call of Duty / Activision and will likely result in bans (including hardware bans via Ricochet).
-
-Use responsibly:
-- Private matches / local play / singleplayer
-- Educational / reverse engineering purposes only
-
-## Next steps / improvements
-
-- Add support for head keypoints (YOLO-pose)
-- Kalman filter on target position
-- Different behavior for close vs long range
-- Auto-adjust smoothing based on enemy velocity
-- ONNX Runtime GPU path as fallback
-
-Good luck. Tune carefully and measure everything.
+The original upstream aimbot repositories remain available separately; this replacement does not redistribute their binary artifacts.

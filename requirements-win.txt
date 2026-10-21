@@ -1,0 +1,7 @@
+# Versions are pinned for repeatable Windows builds. No torch, CUDA installer or .pt files.
+numpy==2.1.3
+opencv-python==4.11.0.86
+mss==10.1.0
+onnxruntime-directml==1.22.0
+pyinstaller==6.16.0
+pytest==8.4.2
