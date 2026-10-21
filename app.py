@@ -19,7 +19,9 @@ def self_test() -> int:
     engine = PersonDetector(model)
     img = np.zeros((640, 640, 3), dtype=np.uint8)
     detections, elapsed = engine.detect(img, .9)
-    print('PASS: decode, ONNX load, inference', engine.provider, f'{elapsed:.1f} ms', len(detections))
+    import sys
+    if sys.stdout is not None:
+        print('PASS: decode, ONNX load, inference', engine.provider, f'{elapsed:.1f} ms', len(detections))
     return 0
 
 
