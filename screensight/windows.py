@@ -4,6 +4,7 @@ import ctypes
 import sys
 from ctypes import wintypes
 from dataclasses import dataclass
+import unicodedata
 
 VK_RBUTTON = 0x02
 VK_F8 = 0x77
@@ -22,6 +23,26 @@ def key_down(key: int) -> bool:
     return sys.platform == 'win32' and bool(ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000)
 
 
+def normalized_window_title(text: str) -> str:
+    """Ignore Unicode format characters hidden in some game-window titles.
+
+    Certain games insert U+200B zero-width spaces or U+2060 word joiners
+    between every visible character. Keep the original title for display;
+    normalize only the foreground title comparison.
+    """
+    normalized = unicodedata.normalize('NFKC', text)
+    return ''.join(ch for ch in normalized if unicodedata.category(ch) != 'Cf').casefold()
+
+
+def window_title_matches(title: str, title_filters: tuple[str, ...]) -> bool:
+    """Case-insensitive substring comparison, resilient to invisible characters."""
+    candidate = normalized_window_title(title)
+    return bool(candidate and any(
+        pattern in candidate for item in title_filters
+        if (pattern := normalized_window_title(item).strip())
+    ))
+
+
 def foreground_game(title_filters: tuple[str, ...]) -> WindowArea | None:
     if sys.platform != 'win32':
         return None
@@ -36,7 +57,7 @@ def foreground_game(title_filters: tuple[str, ...]) -> WindowArea | None:
     buffer = ctypes.create_unicode_buffer(512)
     u.GetWindowTextW(hwnd, buffer, len(buffer))
     title = buffer.value
-    if not title or not any(t.strip().casefold() in title.casefold() for t in title_filters if t.strip()):
+    if not window_title_matches(title, title_filters):
         return None
     rect = wintypes.RECT()
     if not u.GetClientRect(hwnd, ctypes.byref(rect)):
