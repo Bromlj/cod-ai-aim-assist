@@ -27,24 +27,31 @@ class Overlay:
         self.top.wm_attributes('-transparentcolor', TRANSPARENT)
         self.canvas = tk.Canvas(self.top, bg=TRANSPARENT, highlightthickness=0, bd=0)
         self.canvas.pack(fill='both', expand=True)
-        self._styled = False
-        # Install click-through/no-activate styles before the first show.
+        self._shown = False
+        self._last_geometry: str | None = None
+        # Prepare click-through and no-activate styles before first display.
         self.top.update_idletasks()
         make_overlay_clickthrough(self.top.winfo_id())
-        self._styled = True
 
     def draw(self, snap: FrameState, enabled: bool) -> None:
         if not enabled or snap.state not in ('PREVIEW', 'ACTIVE') or not snap.region[2]:
-            self.top.withdraw()
+            if self._shown:
+                self.top.withdraw()
+                self._shown = False
             return
         x, y, w, h = snap.region
-        self.top.geometry(f'{w}x{h}{x:+d}{y:+d}')
-        self.canvas.configure(width=w, height=h)
-        self.top.deiconify()
-        if not self._styled:
+        geometry = f'{w}x{h}{x:+d}{y:+d}'
+        if geometry != self._last_geometry:
+            self.top.geometry(geometry)
+            self.canvas.configure(width=w, height=h)
+            self._last_geometry = geometry
+        # Repeated Tk deiconify() calls on an always-on-top Toplevel may
+        # disturb game focus. Only show the overlay on a hidden->shown transition.
+        if not self._shown:
+            self.top.deiconify()
             self.top.update_idletasks()
             make_overlay_clickthrough(self.top.winfo_id())
-            self._styled = True
+            self._shown = True
         self.canvas.delete('all')
         cx, cy = w / 2, h / 2
         self.canvas.create_line(cx - 8, cy, cx + 8, cy, fill=ACCENT, width=1)
