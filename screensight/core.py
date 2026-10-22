@@ -82,6 +82,10 @@ def parse_yolo_people(raw: np.ndarray, transform: Letterbox,
         return []
     if transform.scale <= 0:
         raise ValueError("Invalid letterbox scale")
+    finite = np.isfinite(boxes).all(axis=1) & np.isfinite(scores)
+    boxes, scores = boxes[finite], scores[finite]
+    if not len(boxes):
+        return []
     boxes[:, (0, 2)] = (boxes[:, (0, 2)] - transform.pad_x) / transform.scale
     boxes[:, (1, 3)] = (boxes[:, (1, 3)] - transform.pad_y) / transform.scale
     boxes[:, (0, 2)] = np.clip(boxes[:, (0, 2)], 0, transform.source_w)
@@ -105,72 +109,137 @@ def parse_yolo_people(raw: np.ndarray, transform: Letterbox,
     return result
 
 
+def box_iou(a: Detection, b: Detection) -> float:
+    intersection = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1)) * max(
+        0.0, min(a.y2, b.y2) - max(a.y1, b.y1))
+    union = a.width * a.height + b.width * b.height - intersection
+    return intersection / union if union > 0 else 0.0
+
+
 class TargetTracker:
-    """Small stickiness/velocity estimator, independent from mouse control."""
-    def __init__(self) -> None:
-        self.last: tuple[float, float] | None = None
-        self.velocity = (0.0, 0.0)
-        self.at = 0.0
+    """Conservative association: maintain a visible lock; never move on a lost track.
+
+    Identity is a geometric estimate, not person recognition or team recognition.
+    A short loss grace prevents immediately switching to another visible person.
+    """
+    def __init__(self, loss_grace: float = 0.14, confirmation_frames: int = 2) -> None:
+        self.loss_grace = loss_grace
+        self.confirmation_frames = confirmation_frames
+        self.acquisitions = 0
+        self.reset()
 
     def reset(self) -> None:
-        self.last = None
+        self.last: tuple[float, float] | None = None
+        self.raw: tuple[float, float] | None = None
+        self.box: Detection | None = None
         self.velocity = (0.0, 0.0)
         self.at = 0.0
+        self.hits = 0
+        self.confirmed = False
+        self.track_id = 0
+        self.state = 'SEARCHING'
 
     def choose(self, boxes: list[Detection], width: int, height: int,
-               aim_height: float, now: float, predict_seconds: float = 0.025
+               aim_height: float, now: float, predict_seconds: float = 0.0
                ) -> tuple[Detection, tuple[float, float]] | None:
-        if not boxes:
-            if now - self.at > 0.35:
-                self.reset()
-            return None
-        centre = (width / 2, height / 2)
-        def rank(d: Detection) -> float:
-            pt = d.aim_point(aim_height)
-            dist = math.dist(pt, centre)
-            sticky = 0.0
-            if self.last and now - self.at < 0.35:
-                last_dist = math.dist(pt, self.last)
-                if last_dist < min(90, width * .25):
-                    sticky = 45.0
-            return dist + (1.0 - d.score) * 65.0 - sticky
-        chosen = min(boxes, key=rank)
-        point = chosen.aim_point(aim_height)
+        centre = (width / 2.0, height / 2.0)
+        radius = min(width, height) * .48
+        candidates = [b for b in boxes
+                      if all(math.isfinite(v) for v in (b.x1, b.y1, b.x2, b.y2, b.score))
+                      and b.width > 0 and b.height > 0
+                      and math.dist(b.aim_point(aim_height), centre) <= radius]
         elapsed = now - self.at
-        if self.last is not None and 0.005 < elapsed < 0.2 and math.dist(point, self.last) < width * .3:
-            vx = (point[0] - self.last[0]) / elapsed
-            vy = (point[1] - self.last[1]) / elapsed
-            self.velocity = (.55 * self.velocity[0] + .45 * vx,
-                             .55 * self.velocity[1] + .45 * vy)
+        previous = self.box
+        chosen = None
+        if previous is not None and 0 <= elapsed <= self.loss_grace:
+            gate = max(18.0, min(90.0, previous.height * .35))
+            old_centre = previous.aim_point(.5)
+            eligible = [b for b in candidates
+                        if .4 <= b.height / max(1, previous.height) <= 2.5
+                        and (box_iou(previous, b) >= .12 or
+                             math.dist(old_centre, b.aim_point(.5)) <= gate)]
+            if eligible:
+                chosen = min(eligible, key=lambda b:
+                    math.dist(old_centre, b.aim_point(.5)) / gate - box_iou(previous, b))
+            else:
+                self.hits = 0
+                self.confirmed = False
+                self.state = 'LOST - INPUT PAUSED'
+                return None
+        if chosen is None:
+            self.reset()
+            if not candidates:
+                return None
+            chosen = min(candidates, key=lambda b:
+                         math.dist(b.aim_point(aim_height), centre) + (1-b.score) * 35)
+            self.acquisitions += 1
+            self.track_id = self.acquisitions
+        point = chosen.aim_point(aim_height)
+        if self.raw is not None and self.last is not None and 0.001 < elapsed < .15:
+            # Time-based smoothing, with a faster response for larger displacements.
+            distance = math.dist(point, self.last)
+            tau = .008 if distance > 20 else .022
+            alpha = 1.0 - math.exp(-elapsed / tau)
+            filtered = tuple(a + alpha * (b-a) for a, b in zip(self.last, point))
+            velocity_alpha = 1.0 - math.exp(-elapsed / .065)
+            self.velocity = tuple(max(-1800., min(1800., old + velocity_alpha *
+                                   ((new-prior)/elapsed - old)))
+                                  for old, new, prior in zip(self.velocity, point, self.raw))
         else:
+            filtered = point
             self.velocity = (0.0, 0.0)
-        self.last, self.at = point, now
-        prediction = (max(0.0, min(float(width), point[0] + self.velocity[0] * predict_seconds)),
-                      max(0.0, min(float(height), point[1] + self.velocity[1] * predict_seconds)))
-        return chosen, prediction
+        self.box, self.raw, self.last, self.at = chosen, point, filtered, now
+        self.hits += 1
+        self.confirmed = self.hits >= self.confirmation_frames
+        self.state = 'LOCKED' if self.confirmed else 'CONFIRMING'
+        # Optional short lead. Screen-space motion includes camera motion; default OFF.
+        lead = max(0., min(.035, predict_seconds))
+        cap = min(24., chosen.width * .2)
+        predicted = tuple(p + max(-cap, min(cap, v * lead))
+                          for p, v in zip(filtered, self.velocity))
+        predicted = (max(0., min(float(width), predicted[0])),
+                     max(0., min(float(height), predicted[1])))
+        return chosen, predicted
 
 
 class MovementFilter:
-    """Bounded movement with smoothing, dead zone, and fractional carry."""
+    """Time-normalized proportional movement, bounded rate, no stale momentum.
+
+    max_step retains its v0.1 meaning at 60 Hz; the rate limit scales with dt.
+    Screen pixels are not game angles: this is not sensitivity calibration.
+    """
     def __init__(self) -> None:
-        self._dx = self._dy = self._carry_x = self._carry_y = 0.0
+        self.reset()
 
     def reset(self) -> None:
-        self._dx = self._dy = self._carry_x = self._carry_y = 0.0
+        self._carry = [0.0, 0.0]
+        self._sign = [0, 0]
 
     def compute(self, offset_x: float, offset_y: float, strength: float,
-                max_step: int, deadzone: float = 2.0) -> tuple[int, int]:
-        if not all(math.isfinite(x) for x in (offset_x, offset_y, strength)):
+                max_step: int, deadzone: float = 2.0,
+                dt: float = 1/60) -> tuple[int, int]:
+        if (not all(math.isfinite(v) for v in
+                    (offset_x, offset_y, strength, max_step, deadzone, dt))
+                or dt <= 0 or dt > .12 or max_step <= 0):
+            self.reset()
             return 0, 0
-        if abs(offset_x) <= deadzone:
-            offset_x = 0.0
-        if abs(offset_y) <= deadzone:
-            offset_y = 0.0
-        self._dx = self._dx * .38 + offset_x * strength * .62
-        self._dy = self._dy * .38 + offset_y * strength * .62
-        self._carry_x += max(-max_step, min(max_step, self._dx))
-        self._carry_y += max(-max_step, min(max_step, self._dy))
-        dx, dy = int(self._carry_x), int(self._carry_y)
-        self._carry_x -= dx
-        self._carry_y -= dy
-        return max(-max_step, min(max_step, dx)), max(-max_step, min(max_step, dy))
+        dt = min(.05, dt)  # Do not catch up a delayed frame with a large jump.
+        strength = max(.01, min(.85, strength))
+        response = 1.0 - math.exp(math.log1p(-strength) * 60.0 * dt)
+        cap = max_step * 60.0 * dt
+        result = []
+        for axis, error in enumerate((offset_x, offset_y)):
+            sign = 1 if error > 0 else -1
+            if abs(error) <= max(0, deadzone):
+                self._carry[axis] = 0.0
+                self._sign[axis] = 0
+                result.append(0)
+                continue
+            if sign != self._sign[axis]:
+                self._carry[axis] = 0.0
+            self._sign[axis] = sign
+            self._carry[axis] += max(-cap, min(cap, error * response))
+            step = int(self._carry[axis])
+            self._carry[axis] -= step
+            result.append(step)
+        return result[0], result[1]

@@ -17,6 +17,7 @@ class WindowArea:
     width: int
     height: int
     title: str
+    hwnd: int = 0
 
 
 def key_down(key: int) -> bool:
@@ -24,23 +25,14 @@ def key_down(key: int) -> bool:
 
 
 def normalized_window_title(text: str) -> str:
-    """Ignore Unicode format characters hidden in some game-window titles.
-
-    Certain games insert U+200B zero-width spaces or U+2060 word joiners
-    between every visible character. Keep the original title for display;
-    normalize only the foreground title comparison.
-    """
     normalized = unicodedata.normalize('NFKC', text)
     return ''.join(ch for ch in normalized if unicodedata.category(ch) != 'Cf').casefold()
 
 
 def window_title_matches(title: str, title_filters: tuple[str, ...]) -> bool:
-    """Case-insensitive substring comparison, resilient to invisible characters."""
     candidate = normalized_window_title(title)
-    return bool(candidate and any(
-        pattern in candidate for item in title_filters
-        if (pattern := normalized_window_title(item).strip())
-    ))
+    return bool(candidate and any(pattern in candidate for item in title_filters
+                if (pattern := normalized_window_title(item).strip())))
 
 
 def foreground_game(title_filters: tuple[str, ...]) -> WindowArea | None:
@@ -68,7 +60,7 @@ def foreground_game(title_filters: tuple[str, ...]) -> WindowArea | None:
     width, height = rect.right - rect.left, rect.bottom - rect.top
     if width < 240 or height < 240:
         return None
-    return WindowArea(origin.x, origin.y, width, height, title)
+    return WindowArea(origin.x, origin.y, width, height, title, int(hwnd))
 
 
 class MOUSEINPUT(ctypes.Structure):
@@ -111,6 +103,10 @@ def make_overlay_clickthrough(hwnd: int) -> None:
     if sys.platform != 'win32':
         return
     u = ctypes.windll.user32
+    # Tk's widget ID can be the child, not the native top-level wrapper.
+    u.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    u.GetAncestor.restype = wintypes.HWND
+    hwnd = u.GetAncestor(hwnd, 2) or hwnd
     u.SetWindowDisplayAffinity.argtypes = (wintypes.HWND, wintypes.DWORD)
     GWL_EXSTYLE = -20
     WS_EX_TRANSPARENT = 0x20

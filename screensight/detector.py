@@ -34,6 +34,10 @@ class PersonDetector:
         if not 256 <= self.height <= 1280 or not 256 <= self.width <= 1280:
             raise ValueError(f'Unsupported model dimensions: {shape}')
         self.input_shape = (1, 3, self.height, self.width)
+        if self.input.type != 'tensor(float)':
+            raise ValueError('This build supports float32 ONNX image inputs only.')
+        self._canvas = np.full((self.height, self.width, 3), 114, np.uint8)
+        self._tensor = np.empty(self.input_shape, dtype=np.float32)
 
     def detect(self, rgb: np.ndarray, threshold: float) -> tuple[list[Detection], float]:
         h, w = rgb.shape[:2]
@@ -42,10 +46,12 @@ class PersonDetector:
         scale = min(self.width / w, self.height / h)
         nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
         resized = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        canvas = np.full((self.height, self.width, 3), 114, np.uint8)
+        canvas = self._canvas
+        canvas.fill(114)
         px, py = (self.width - nw) // 2, (self.height - nh) // 2
         canvas[py:py+nh, px:px+nw] = resized
-        tensor = np.ascontiguousarray(canvas.transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
+        tensor = self._tensor
+        np.divide(canvas.transpose(2, 0, 1)[None], 255.0, out=tensor, casting='unsafe')
         start = time.perf_counter()
         raw = self.session.run(None, {self.input.name: tensor})[0]
         duration = (time.perf_counter() - start) * 1000
