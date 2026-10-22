@@ -1,0 +1,101 @@
+name: Security scan of released ScreenSight EXE
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/screensight-antivirus.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows-defender:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Download the exact distributed artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 39678509781
+          name: ScreenSight-Windows-x64
+          path: scan
+          github-token: ${{ github.token }}
+
+      - name: Verify executable identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '4E7681449857D6D8F5712D72D96AB0F5F216186DE5584E074F0191666DACD115'
+          $exe = (Resolve-Path './scan/ScreenSight.exe').Path
+          $actual = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          Write-Host "SHA256: $actual"
+          Write-Host "Size: $((Get-Item -LiteralPath $exe).Length) bytes"
+          if ($actual -ne $expected) { throw "Different EXE; refusing to scan a mismatched build." }
+          "EXE checksum: VERIFIED ($actual)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Check Microsoft Defender is usable
+        id: defender
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Defender -ErrorAction Stop
+          $status = Get-MpComputerStatus -ErrorAction Stop
+          $status | Select-Object AMRunningMode,AMServiceEnabled,AntivirusEnabled,AntivirusSignatureVersion,AntivirusSignatureLastUpdated,RealTimeProtectionEnabled | Format-List
+          if (-not $status.AMServiceEnabled -or -not $status.AntivirusEnabled) {
+            throw 'Microsoft Defender Antivirus is not active on this runner. No AV verdict.'
+          }
+          "Defender antivirus enabled: YES" >> $env:GITHUB_STEP_SUMMARY
+          "Defender signatures: $($status.AntivirusSignatureVersion)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Scan exact EXE with Microsoft Defender
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path './scan/ScreenSight.exe').Path
+          $scanStart = Get-Date
+          Start-MpScan -ScanType CustomScan -ScanPath $exe -ErrorAction Stop
+          $hits = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object {
+            ($_.InitialDetectionTime -ge $scanStart.AddMinutes(-1)) -or 
+            ((@($_.Resources) -join ' ') -like '*ScreenSight.exe*')
+          })
+          if ($hits.Count -gt 0) {
+            $hits | Format-List * | Out-String | Write-Host
+            throw "Microsoft Defender detections: $($hits.Count)"
+          }
+          "Defender file scan: completed with no reported detections" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host 'DEFENDER_SCAN_COMPLETE_NO_DETECTIONS'
+
+  clamav:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download the exact distributed artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 39678509781
+          name: ScreenSight-Windows-x64
+          path: scan
+          github-token: ${{ github.token }}
+      - name: Verify executable identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '4e7681449857d6d8f5712d72d96ab0f5f216186de5584e074f0191666dacd115  scan/ScreenSight.exe' | sha256sum --check -
+      - name: Install ClamAV and update signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clamav clamav-freshclam
+          sudo systemctl stop clamav-freshclam || true
+          sudo freshclam --stdout
+          clamscan --version
+      - name: Scan exact EXE with ClamAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          clamscan --infected --statistics=bytecode --scan-archive=yes scan/ScreenSight.exe
+          echo 'ClamAV file scan: completed with no reported detections' >> "$GITHUB_STEP_SUMMARY"
